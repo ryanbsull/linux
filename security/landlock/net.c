@@ -6,6 +6,9 @@
  * Copyright © 2022-2025 Microsoft Corporation
  */
 
+#include <asm-generic/errno-base.h>
+#include <linux/fs.h>
+#include <linux/path.h>
 #include <linux/in.h>
 #include <linux/lsm_audit.h>
 #include <linux/net.h>
@@ -50,7 +53,8 @@ static int current_check_access_socket(struct socket *const sock,
 	layer_mask_t layer_masks[LANDLOCK_NUM_ACCESS_NET] = {};
 	const struct landlock_rule *rule;
 	struct landlock_id id = {
-		.type = LANDLOCK_KEY_NET_PORT,
+		.type = (address->sa_family == AF_UNIX || address->sa_family == AF_LOCAL) ?
+		        LANDLOCK_KEY_INODE : LANDLOCK_KEY_NET_PORT,
 	};
 	const struct access_masks masks = {
 		.net = access_request,
@@ -115,6 +119,10 @@ static int current_check_access_socket(struct socket *const sock,
 	}
 #endif /* IS_ENABLED(CONFIG_IPV6) */
 
+	/* Exit if this is a UNIX socket */
+	case AF_LOCAL:
+	case AF_UNIX: break;
+
 	default:
 		return 0;
 	}
@@ -171,8 +179,17 @@ static int current_check_access_socket(struct socket *const sock,
 			return -EINVAL;
 	}
 
-	id.key.data = (__force uintptr_t)port;
-	BUILD_BUG_ON(sizeof(port) > sizeof(id.key.data));
+	if (address->sa_family == AF_UNIX || address->sa_family == AF_LOCAL) {
+		/* retrieve filepath from struct socket->file->path */
+		struct path *p = &sock->file->path;
+		struct inode * inode = d_backing_inode(p->dentry);
+		rcu_read_lock();
+		id.key.object = rcu_dereference(landlock_inode(inode)->object);
+		rcu_read_unlock();
+	} else {
+    	id.key.data = (__force uintptr_t)port;
+    	BUILD_BUG_ON(sizeof(port) > sizeof(id.key.data));
+	}
 
 	rule = landlock_find_rule(subject->domain, id);
 	access_request = landlock_init_layer_masks(subject->domain,
