@@ -122,6 +122,9 @@ landlock_superblock(const struct super_block *const superblock)
 	return superblock->s_security + landlock_blob_sizes.lbs_superblock;
 }
 
+int current_check_access_path(const struct path *const path,
+				     access_mask_t access_request);
+
 __init void landlock_add_fs_hooks(void);
 
 int landlock_append_fs_rule(struct landlock_ruleset *const ruleset,

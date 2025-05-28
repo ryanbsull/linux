@@ -7,6 +7,7 @@
  * Copyright © 2024-2025 Microsoft Corporation
  */
 
+#include <asm-generic/errno-base.h>
 #include <asm/current.h>
 #include <linux/cleanup.h>
 #include <linux/cred.h>
@@ -262,6 +263,26 @@ static const struct access_masks unix_scope = {
 	.scope = LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET,
 };
 
+static bool is_sock_rule(struct path *sk_path, const struct landlock_cred_security *const subject) {
+	const struct dentry *dentry = sk_path->dentry;
+	const struct inode *inode;
+	struct landlock_id id = {
+		.type = LANDLOCK_KEY_INODE,
+	};
+	const struct landlock_rule *rule;
+
+	/* Ignores nonexistent leafs. */
+	if (d_is_negative(dentry))
+		return NULL;
+
+	inode = d_backing_inode(dentry);
+	rcu_read_lock();
+	id.key.object = rcu_dereference(landlock_inode(inode)->object);
+	rule = landlock_find_rule(subject->domain, id);
+	rcu_read_unlock();
+	return rule != NULL;
+}
+
 static int hook_unix_stream_connect(struct sock *const sock,
 				    struct sock *const other,
 				    struct sock *const newsk)
@@ -274,6 +295,15 @@ static int hook_unix_stream_connect(struct sock *const sock,
 	/* Quick return for non-landlocked tasks. */
 	if (!subject)
 		return 0;
+
+	/* 
+	 * Checks if the UNIX socket has been allowed to be connected to as
+	 * well as if a rule for the file exists
+	 */
+	if (is_sock_rule(&(unix_sk(other)->path), subject))
+		return current_check_access_path(&(unix_sk(other)->path),
+	                                     LANDLOCK_ACCESS_FS_READ_FILE
+	                                     | LANDLOCK_ACCESS_FS_WRITE_FILE);
 
 	if (!is_abstract_socket(other))
 		return 0;
@@ -297,6 +327,7 @@ static int hook_unix_stream_connect(struct sock *const sock,
 static int hook_unix_may_send(struct socket *const sock,
 			      struct socket *const other)
 {
+	int err;
 	size_t handle_layer;
 	const struct landlock_cred_security *const subject =
 		landlock_get_applicable_subject(current_cred(), unix_scope,
@@ -304,6 +335,16 @@ static int hook_unix_may_send(struct socket *const sock,
 
 	if (!subject)
 		return 0;
+
+	/* 
+	 * Checks if the UNIX socket has been allowed to be connected to as
+	 * well as if a rule for the file exists
+	 */
+	if (is_sock_rule(&other->file->f_path, subject) &&
+	    (err = current_check_access_path(&other->file->f_path,
+	                                     LANDLOCK_ACCESS_FS_READ_FILE
+	                                     | LANDLOCK_ACCESS_FS_WRITE_FILE)) != -EACCES)
+		return err;
 
 	/*
 	 * Checks if this datagram socket was already allowed to be connected

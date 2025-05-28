@@ -17,6 +17,7 @@
 #include "cred.h"
 #include "limits.h"
 #include "net.h"
+#include "fs.h"
 #include "ruleset.h"
 
 int landlock_append_net_rule(struct landlock_ruleset *const ruleset,
@@ -115,6 +116,9 @@ static int current_check_access_socket(struct socket *const sock,
 	}
 #endif /* IS_ENABLED(CONFIG_IPV6) */
 
+	/* Checks if the user is connecting to a UNIX socket */
+	case AF_UNIX: break;
+
 	default:
 		return 0;
 	}
@@ -169,6 +173,18 @@ static int current_check_access_socket(struct socket *const sock,
 		 */
 		if (address->sa_family != sock->sk->__sk_common.skc_family)
 			return -EINVAL;
+	}
+
+	if (address->sa_family == AF_UNIX) {
+		/* retrieves the UNIX socket path from struct socket->file->f_path */
+		struct path *p = &sock->file->f_path;
+		/*
+		 * Redirects access request to the landlock filesystem control path
+		 * since a UNIX socket is just a local file with an associated path.
+		 * Also assumes that a call to connect() to a UNIX socket is
+		 * equivalent to a request to read or write to some file.
+		 */
+		return current_check_access_path(p, LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_WRITE_FILE);
 	}
 
 	id.key.data = (__force uintptr_t)port;
