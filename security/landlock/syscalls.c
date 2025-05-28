@@ -27,6 +27,8 @@
 #include <linux/types.h>
 #include <linux/uaccess.h>
 #include <uapi/linux/landlock.h>
+#include <linux/net.h>
+#include <net/af_unix.h>
 
 #include "cred.h"
 #include "domain.h"
@@ -319,6 +321,7 @@ static int add_rule_path_beneath(struct landlock_ruleset *const ruleset,
 	struct path path;
 	int res, err;
 	access_mask_t mask;
+	struct socket* sock;
 
 	/* Copies raw user space buffer. */
 	res = copy_from_user(&path_beneath_attr, rule_attr,
@@ -339,9 +342,14 @@ static int add_rule_path_beneath(struct landlock_ruleset *const ruleset,
 		return -EINVAL;
 
 	/* Gets and checks the new rule. */
-	err = get_path_from_fd(path_beneath_attr.parent_fd, &path);
-	if (err)
-		return err;
+	sock = sockfd_lookup(path_beneath_attr.parent_fd, &err);
+	if (sock != NULL && !err) {
+		memcpy(&path, &unix_sk(sock->sk)->path, sizeof(struct path));
+	} else {
+		err = get_path_from_fd(path_beneath_attr.parent_fd, &path);
+		if (err)
+			return err;
+	}
 
 	/* Imports the new rule. */
 	err = landlock_append_fs_rule(ruleset, &path,

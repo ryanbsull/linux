@@ -948,7 +948,7 @@ jump_up:
 	return allowed_parent1 && allowed_parent2;
 }
 
-static int current_check_access_path(const struct path *const path,
+int current_check_access_path(const struct path *const path,
 				     access_mask_t access_request)
 {
 	const struct access_masks masks = {
