@@ -7,6 +7,7 @@
  */
 
 #include <asm-generic/errno-base.h>
+#include <linux/dcache.h>
 #include <linux/fs.h>
 #include <linux/path.h>
 #include <linux/in.h>
@@ -20,7 +21,29 @@
 #include "cred.h"
 #include "limits.h"
 #include "net.h"
+#include "fs.h"
 #include "ruleset.h"
+
+int landlock_append_unix_sock_rule(struct landlock_ruleset *const ruleset,
+			     struct path const* unix_sock, access_mask_t access_rights)
+{
+	int err;
+	struct inode *const inode = d_backing_inode(unix_sock->dentry);
+	const struct landlock_id id = {
+		.key.object = landlock_inode(inode)->object,
+		.type = LANDLOCK_KEY_INODE,
+	};
+
+	/* Transforms relative access rights to absolute ones. */
+	access_rights |= LANDLOCK_MASK_ACCESS_NET &
+			 ~landlock_get_net_access_mask(ruleset, 0);
+
+	mutex_lock(&ruleset->lock);
+	err = landlock_insert_rule(ruleset, id, access_rights);
+	mutex_unlock(&ruleset->lock);
+
+	return err;
+}
 
 int landlock_append_net_rule(struct landlock_ruleset *const ruleset,
 			     const u16 port, access_mask_t access_rights)
@@ -53,7 +76,7 @@ static int current_check_access_socket(struct socket *const sock,
 	layer_mask_t layer_masks[LANDLOCK_NUM_ACCESS_NET] = {};
 	const struct landlock_rule *rule;
 	struct landlock_id id = {
-		.type = (address->sa_family == AF_UNIX || address->sa_family == AF_LOCAL) ?
+		.type = (address->sa_family == AF_UNIX) ?
 		        LANDLOCK_KEY_INODE : LANDLOCK_KEY_NET_PORT,
 	};
 	const struct access_masks masks = {
@@ -120,7 +143,6 @@ static int current_check_access_socket(struct socket *const sock,
 #endif /* IS_ENABLED(CONFIG_IPV6) */
 
 	/* Exit if this is a UNIX socket */
-	case AF_LOCAL:
 	case AF_UNIX: break;
 
 	default:
@@ -180,8 +202,8 @@ static int current_check_access_socket(struct socket *const sock,
 	}
 
 	if (address->sa_family == AF_UNIX || address->sa_family == AF_LOCAL) {
-		/* retrieve filepath from struct socket->file->path */
-		struct path *p = &sock->file->path;
+		/* retrieve filepath from struct socket->file->f_path */
+		struct path *p = &sock->file->f_path;
 		struct inode * inode = d_backing_inode(p->dentry);
 		rcu_read_lock();
 		id.key.object = rcu_dereference(landlock_inode(inode)->object);
