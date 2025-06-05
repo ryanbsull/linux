@@ -982,6 +982,76 @@ TEST_F(various_address_sockets, scoped_pathname_sockets)
 		_metadata->exit_code = KSFT_FAIL;
 }
 
+void create_access_rights(struct __test_metadata *const _metadata, int unix_sk, __u64 access) {
+	struct landlock_path_beneath_attr path_beneath = {
+		.allowed_access = access,
+		.parent_fd = unix_sk,
+	};
+	struct landlock_ruleset_attr ruleset_attr = {
+		.handled_access_fs = access,
+	};
+	int ruleset_fd =
+		landlock_create_ruleset(&ruleset_attr, sizeof(ruleset_attr), 0);
+	ASSERT_LE(0, ruleset_fd);
+	ASSERT_EQ(0, landlock_add_rule(ruleset_fd, LANDLOCK_RULE_PATH_BENEATH,
+					       &path_beneath, 0));
+}
+
+TEST(pathname_connect) {
+	struct service_fixture read_addr, rw_addr;
+	int read_socket, rw_socket;
+
+	drop_caps(_metadata);
+	memset(&read_addr, 0, sizeof(read_addr));
+	read_addr.unix_addr.sun_family = AF_UNIX;
+	sprintf(read_addr.unix_addr.sun_path,
+		"failure");
+	read_addr.unix_addr_len = SUN_LEN(&read_addr.unix_addr);
+	memset(&rw_addr, 0, sizeof(rw_addr));
+	rw_addr.unix_addr.sun_family = AF_UNIX;
+	sprintf(rw_addr.unix_addr.sun_path,
+		"success");
+	rw_addr.unix_addr_len = SUN_LEN(&rw_addr.unix_addr);
+
+	read_socket = socket(AF_UNIX, SOCK_DGRAM, 0);
+	ASSERT_LE(0, read_socket);
+	rw_socket = socket(AF_UNIX, SOCK_DGRAM, 0);
+	ASSERT_LE(0, rw_socket);
+
+	ASSERT_EQ(0, bind(read_socket, &read_addr.unix_addr, read_addr.unix_addr_len));
+	ASSERT_EQ(0, bind(rw_socket, &rw_addr.unix_addr, rw_addr.unix_addr_len));
+
+	create_scoped_domain(_metadata, LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET);
+	/* Provide access rights for read_socket */
+	create_access_rights(_metadata, read_socket,
+			     LANDLOCK_ACCESS_FS_READ_FILE);
+	/* Provide access rights for rw_socket */
+	create_access_rights(_metadata, rw_socket,
+			     LANDLOCK_ACCESS_FS_READ_FILE 
+			     | LANDLOCK_ACCESS_FS_WRITE_FILE);
+	/*
+	 * Assuming a call to connect() is equivalent to a R/W access request
+	 * read_socket should fail
+	 */
+	ASSERT_EQ(-1,
+		  connect(read_socket, &read_addr.unix_addr,
+			  read_addr.unix_addr_len));
+	ASSERT_EQ(0,
+		  connect(rw_socket, &rw_addr.unix_addr,
+			  rw_addr.unix_addr_len));
+	ASSERT_EQ(-1,
+		  sendto(read_socket, ".", 1, 0,
+			 &read_addr.unix_addr,
+			 read_addr.unix_addr_len));
+	ASSERT_EQ(1,
+		  sendto(rw_socket, ".", 1, 0,
+			 &rw_addr.unix_addr,
+			 rw_addr.unix_addr_len));
+
+	EXPECT_EQ(0, close(read_socket));
+	EXPECT_EQ(0, close(rw_socket));
+}
+
 TEST(datagram_sockets)
 {
 	struct service_fixture connected_addr, non_connected_addr;
@@ -1148,5 +1218,6 @@ TEST(self_connect)
 	    WEXITSTATUS(status) != EXIT_SUCCESS)
 		_metadata->exit_code = KSFT_FAIL;
 }
+
 
 TEST_HARNESS_MAIN
